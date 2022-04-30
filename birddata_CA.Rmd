@@ -1,0 +1,107 @@
+---
+title: "Bird Project"
+author: "Shyam Nair"
+date: "4/29/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(rebird)
+EBIRD_KEY <- 'f2cqqoip637r'
+nearestobs(species_code('branta canadensis'), locname = "CA-BC", obsDt = '2022-02-28 0:00', back = 30, key = EBIRD_KEY)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure}
+ebirdhistorical(loc = 'US-NJ', date = '2019-02-28', key = EBIRD_KEY)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(broom)
+```
+
+
+```{r}
+dates <- seq(as.Date("2021-4-1"), as.Date("2022-4-1"), "days")
+date_index <- 1:length(dates)
+bird_tibble <- tibble()
+for (i in date_index) {
+  print(i)
+  bird_tibble <- goose_tibble %>% bind_rows(ebirdhistorical(loc = 'CA-BC', date = dates[i], key = EBIRD_KEY))
+}
+bird_tibble
+```
+
+
+```{r}
+RWB_filtered_tibble <- bird_tibble %>% filter(comName == 'Red-winged Blackbird')
+RWB_filtered_tibble
+```
+```{r}
+RWB_filtered_tibble$idu <- row.names(goose_filtered_tibble)
+RWB_filtered_tibble$idu <- as.numeric(row.names(goose_filtered_tibble))
+RWB_filtered_tibble[is.na(goose_filtered_tibble)] <- 0
+RWB_filtered_tibble %>% ggplot(aes(y = howMany,x = idu)) +
+  geom_line()
+```
+
+```{r}
+library(glue)
+write.table(RWB_filtered_tibble, file = "CA_BC_RedWinged_Blackbird.csv", sep=",", row.names=FALSE)
+```
+
+Data imported from working directory pane.
+
+```{r}
+library(forecast)
+ca_blackbirds <- RWB_filtered_tibble %>% select(howMany)
+ca_ts <- ca_blackbirds %>% replace_na(list(howMany = 0)) %>% ts(frequency=12)
+auto.arima(ca_ts, D=1)
+```
+
+```{r}
+#x <- auto.arima(nj_ts, D=1)
+bacf <- acf(ca_ts, plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+cil <- ggfortify:::confint.acf(acf(ca_ts, plot = FALSE), ci.type = 'sarima')
+q <- ggplot(data = bacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cil), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cil), linetype = 3, color = 'darkblue') + ggtitle("ACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("autocorrelation")
+q
+```
+
+
+```{r}
+bpacf <- pacf(ca_ts, plot = FALSE)
+bpacfdf <- with(bpacf, data.frame(lag, acf))
+cill <- ggfortify:::confint.acf(pacf(ca_ts, plot = FALSE), ci.type = 'sarima')
+q <- ggplot(data = bpacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cill), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cill), linetype = 3, color = 'darkblue') + ggtitle("PACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("Partial Autocorrelation")
+q
+```
+
+```{r}
+box_tibble <- tibble()
+for (i in 1:20) {
+box_tibble <- box_tibble %>% bind_rows(Box.test(nj_ts, lag = i, type = "Ljung") %>% tidy())
+}
+box_tibble %>% filter(statistic == min(abs(statistic)))
+```
