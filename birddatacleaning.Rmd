@@ -1,0 +1,184 @@
+---
+title: "birddatacleaning"
+author: "Tom Levy"
+date: "4/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(rebird)
+EBIRD_KEY <- "q3delvootbg0"
+nearestobs(species_code('branta canadensis'), locname = "US-NJ", obsDt = '2022-02-28 0:00', back = 30, key = EBIRD_KEY)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure}
+ebirdhistorical(loc = 'US-NJ', date = '2019-02-28', key = EBIRD_KEY)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(broom)
+```
+
+
+```{r}
+dates <- seq(as.Date("2017-4-1"), as.Date("2022-4-1"), "days")
+date_index <- 1:length(dates)
+goose_tibble <- tibble()
+
+for (i in date_index) {
+  print(i)
+  goose_tibble <- goose_tibble %>% bind_rows(ebirdhistorical(loc = 'US-NJ', date = dates[i], key = EBIRD_KEY))
+}
+
+goose_tibble
+```
+
+
+```{r}
+goose_filtered_tibble <- goose_tibble %>% filter(comName == 'Red-winged Blackbird')
+goose_filtered_tibble
+```
+```{r}
+goose_filtered_tibble$idu <- row.names(goose_filtered_tibble)
+goose_filtered_tibble$idu <- as.numeric(row.names(goose_filtered_tibble))
+
+goose_filtered_tibble[is.na(goose_filtered_tibble)] <- 0
+
+goose_filtered_tibble %>% ggplot(aes(y = howMany,x = idu)) +
+  geom_line() +  ggtitle("New Jersey Red-Winged Blackbird Index Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Index") + ylab("# of Red-Winged Blackbirds")
+```
+
+```{r}
+library(glue)
+write.table(goose_filtered_tibble, file = "US_NJ_RedWinged_Blackbird.csv", sep=",", row.names=FALSE)
+```
+
+Data imported from working directory pane.
+
+```{r}
+library(forecast)
+nj_blackbirds <- us_nj %>% select(howMany)
+nj_ts <- ts(nj_blackbirds, frequency=12)
+auto.arima(nj_ts, D=1)
+```
+```{r}
+library(tseries)
+dickey_tibble <- tibble()
+
+for (i in 1:20) {
+  dickey_tibble <- dickey_tibble %>% bind_rows(adf.test(nj_ts, alternative = "stationary", k = i) %>% tidy())
+}
+
+dickey_tibble %>% filter(p.value == min(p.value))
+```
+
+```{r}
+library(forecast)
+sarima_model = auto.arima(nj_ts, D=1)
+autoplot(forecast::forecast(sarima_model, h=365), level = c(90)) + ggtitle("New Jersey Red-Winged Blackbird Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("# of Red-Winged Blackbirds")
+```
+
+```{r}
+#x <- auto.arima(nj_ts, D=1)
+
+bacf <- acf(nj_ts, plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+cil <- ggfortify:::confint.acf(acf(nj_ts, plot = FALSE), ci.type = 'sarima')
+
+q <- ggplot(data = bacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cil), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cil), linetype = 3, color = 'darkblue') + ggtitle("ACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("autocorrelation")
+q
+
+
+```
+
+
+```{r}
+bpacf <- pacf(nj_ts, plot = FALSE)
+bpacfdf <- with(bpacf, data.frame(lag, acf))
+cill <- ggfortify:::confint.acf(pacf(nj_ts, plot = FALSE), ci.type = 'sarima')
+
+q <- ggplot(data = bpacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cill), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cill), linetype = 3, color = 'darkblue') + ggtitle("PACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("Partial Autocorrelation")
+q
+
+```
+
+```{r}
+box_tibble <- tibble()
+
+for (i in 1:20) {
+box_tibble <- box_tibble %>% bind_rows(Box.test(nj_ts, lag = i, type = "Ljung") %>% tidy())
+}
+
+box_tibble %>% filter(statistic == min(abs(statistic)))
+```
+
+```{r}
+library(smooth)
+library(greybox)
+es(nj_ts, h=12, holdout=TRUE, silent=FALSE)
+```
+```{r}
+library(fpp2)
+
+autoplot(ses(nj_ts, alpha=0.2, h=100)) + ggtitle("100-Step Ahead Exponential Smoothing Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("Value")
+```
+```{r}
+autoplot(ses(diff(nj_ts), alpha=0.2, h=100)) + ggtitle("100-Step Ahead Differenced Exponential Smoothing Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("Differenced Value")
+```
+```{r}
+nj_ts_train <- nj_ts[1:900]
+nj_ts_test <- nj_ts[901:len(nj_ts)]
+
+nj_ts_ses <- ses(diff(nj_ts_train),
+                    alpha = .2,
+                    h = 200)
+
+accuracy(nj_ts_ses, nj_ts_test)
+ 
+# comparing our model
+alpha <- seq(.01, .99, by = .01)
+RMSE <- NA
+for(i in seq_along(alpha)) {
+  fit <- ses(diff(nj_ts_train), alpha = alpha[i],
+             h = 200)
+  RMSE[i] <- accuracy(fit,
+                      diff(nj_ts_test))[2,2]
+}
+ 
+# convert to a data frame and
+# identify min alpha value
+alpha.fit <- data_frame(alpha, RMSE)
+alpha.min <- filter(alpha.fit,
+                    RMSE == min(RMSE))
+ 
+# plot RMSE vs. alpha
+ggplot(alpha.fit, aes(alpha, RMSE)) +
+  geom_line() +
+  geom_point(data = alpha.min,
+             aes(alpha, RMSE),
+             size = 2, color = "red") + ggtitle("Alpha vs RMSE") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Alpha") + ylab("RMSE")
+```
+
+
