@@ -1,0 +1,230 @@
+---
+title: "birddatacleaning"
+author: "Tom Levy"
+date: "4/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initial EBird Library + Tests of Commnds
+
+```{r cars}
+library(rebird)
+EBIRD_KEY <- "q3delvootbg0"
+nearestobs(species_code('branta canadensis'), locname = "US-NJ", obsDt = '2022-02-28 0:00', back = 30, key = EBIRD_KEY)
+```
+
+```{r pressure}
+ebirdhistorical(loc = 'US-NJ', date = '2019-02-28', key = EBIRD_KEY)
+```
+
+## Data Collection
+
+We imported necessary libraries for the data collection. After getting a collection of dates across 5 years, we loaded them all into one tibble + filtered by Red-winged blackbird. The below index plot caused us to change course (take the fourth root of the counts of birds + group by month in a later section of code).
+
+NOTE: I have commented out the initial data collection chunks since R Markdown will not let it knit efficiently.
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(broom)
+```
+
+
+```{r}
+#dates <- seq(as.Date("2017-4-1"), as.Date("2022-4-1"), "days")
+#date_index <- 1:length(dates)
+#goose_tibble <- tibble()
+
+#for (i in date_index) {
+#  print(i)
+#  goose_tibble <- goose_tibble %>% bind_rows(ebirdhistorical(loc = 'US-NJ', date = dates[i], key = EBIRD_KEY))
+#}
+
+#goose_tibble
+```
+
+
+```{r}
+#goose_filtered_tibble <- goose_tibble %>% filter(comName == 'Red-winged Blackbird')
+#goose_filtered_tibble
+```
+```{r}
+#goose_filtered_tibble$idu <- row.names(goose_filtered_tibble)
+#goose_filtered_tibble$idu <- as.numeric(row.names(goose_filtered_tibble))
+
+#goose_filtered_tibble[is.na(goose_filtered_tibble)] <- 0
+
+#goose_filtered_tibble %>% ggplot(aes(y = howMany,x = idu)) +
+#  geom_line() +  ggtitle("New Jersey Red-Winged Blackbird Index Plot") + theme(plot.title = element_text(size = 10)) + #theme(plot.title = element_text(hjust = 0.5)) + xlab("Index") + ylab("# of Red-Winged Blackbirds")
+```
+##File Write + Re-load
+
+```{r}
+#library(glue)
+#write.table(goose_filtered_tibble, file = "US_NJ_RedWinged_Blackbird.csv", sep=",", row.names=FALSE)
+```
+
+Data imported from working directory pane.
+
+## Group by Month + Fourth-Root Transform
+
+We chose to group by month to account for sampling inconsistencies and the below plot still had clear outliers, so we took fourth roots.
+
+```{r}
+us_nj <- read_csv("US_NJ_RedWinged_Blackbird.csv")
+us_nj_fixed <- us_nj %>% mutate(., fixed_date = substring(as.character(obsDt), 1, 7)) %>% group_by(fixed_date) %>% summarize(monthly_birds = sum(howMany))
+
+us_nj_fixed$idu <- row.names(us_nj_fixed)
+us_nj_fixed$idu <- as.numeric(row.names(us_nj_fixed))
+
+us_nj_fixed[is.na(us_nj_fixed)] <- 0
+
+us_nj_fixed %>% ggplot(aes(y = monthly_birds,x = idu)) +
+  geom_line() +  ggtitle("New Jersey Red-Winged Blackbird Index Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Index") + ylab("# of Red-Winged Blackbirds")
+```
+```{r}
+us_nj_fixed %>% ggplot(aes(y = monthly_birds^0.25,x = idu)) +
+  geom_line() +  ggtitle("New Jersey Red-Winged Blackbird Index Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Index") + ylab("# of Red-Winged Blackbirds")
+```
+## ARIMA/SARIMA
+
+We did a seasonal-transform of the data after fourth-rooting it and found our ARIMA + SARIMA models from there.
+
+```{r}
+library(forecast)
+nj_blackbirds <- us_nj_fixed %>% select(monthly_birds) %>% .^0.25
+nj_ts <- ts(nj_blackbirds, frequency=3)
+auto.arima(nj_ts, D=1)
+```
+```{r}
+auto.arima(nj_ts)
+```
+
+## ADF Test + 12-Step Ahead Forecast
+
+Here, we made a table of ADF tests using bind_rows to test whether our data was stationary or not, and it was for all single-digit lag values.
+
+Below, we plotted our 12-Step ahead forecast to predict what another season would look like for the Red-Winged Blackbird population.
+
+```{r}
+library(tseries)
+dickey_tibble <- tibble()
+
+for (i in 1:20) {
+  dickey_tibble <- dickey_tibble %>% bind_rows(adf.test(nj_ts, alternative = "stationary", k = i) %>% tidy())
+}
+
+dickey_tibble %>% filter(p.value == min(p.value))
+```
+
+```{r}
+library(forecast)
+sarima_model = auto.arima(nj_ts, D=1)
+autoplot(forecast::forecast(sarima_model, h=12), level = c(90)) + ggtitle("New Jersey Red-Winged Blackbird Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("# of Red-Winged Blackbirds")
+```
+## ACF/PACF Plots
+
+We got the autocorrelations + partial autocorrelations and made a dataframe including the lag. Since SARIMA was a better fit for our data from the previous results, we built a confidence interval using ggfortify with the type being for a SARIMA model. We added dashed lines corresponding to our CIs as well as the corresponding vertical line segments corresponding to each ACF/PACF respectively. 
+```{r}
+#x <- auto.arima(nj_ts, D=1)
+
+bacf <- acf(nj_ts, plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+cil <- ggfortify:::confint.acf(acf(nj_ts, plot = FALSE), ci.type = 'sarima')
+
+q <- ggplot(data = bacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cil), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cil), linetype = 3, color = 'darkblue') + ggtitle("ACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("autocorrelation")
+q
+
+
+```
+
+
+```{r}
+bpacf <- pacf(nj_ts, plot = FALSE)
+bpacfdf <- with(bpacf, data.frame(lag, acf))
+cill <- ggfortify:::confint.acf(pacf(nj_ts, plot = FALSE), ci.type = 'sarima')
+
+q <- ggplot(data = bpacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = cill), linetype = 3, color = 'darkblue') + geom_hline(aes(yintercept = -cill), linetype = 3, color = 'darkblue') + ggtitle("PACF Plot") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Lag") + ylab("Partial Autocorrelation")
+q
+
+```
+# Box-Ljung Test
+
+For the Box-Ljung Test, we did a similar procedure that we did for the ADF test insofar as storing our results. With each successive lag, its performance got worse, so we did not perform any differencing at this point. 
+
+```{r}
+box_tibble <- tibble()
+
+for (i in 1:20) {
+box_tibble <- box_tibble %>% bind_rows(Box.test(nj_ts, lag = i, type = "Ljung") %>% tidy())
+}
+
+box_tibble
+```
+## Exponential Smoothing
+
+We sought to try exponential smoothing as a means to account for the seasonality in our data. We imported smooth and greybox to smooth our time series + fit it to an exponential smoothing function respectively. Regardless of our alpha value, the exponential smoothing technique did not properly account for the seasonality in our data.
+
+We tried to do an 80-20 train-test split to get an idea of what alpha we should use in our exponential smoothing function. 0.99 ended up being the alpha value that returned the lowest RMSE.
+
+```{r}
+library(smooth)
+library(greybox)
+es(nj_ts, h=12, holdout=TRUE, silent=FALSE)
+```
+```{r}
+library(fpp2)
+
+autoplot(ses(nj_ts, alpha=0.99, h=12)) + ggtitle("500-Step Ahead Exponential Smoothing Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("Value")
+```
+```{r}
+autoplot(ses(nj_ts), alpha=0.2, h=12) + ggtitle("500-Step Ahead Differenced Exponential Smoothing Forecast") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("H") + ylab("Differenced Value")
+```
+```{r}
+nj_ts_train <- nj_ts[1:48]
+nj_ts_test <- nj_ts[49:60]
+
+nj_ts_ses <- ses(nj_ts_train,
+                    alpha = .2,
+                    h = 12)
+
+accuracy(nj_ts_ses, nj_ts_test)
+
+alpha <- seq(.01, .99, by = .01)
+RMSE <- NA
+for(i in seq_along(alpha)) {
+  fit <- ses(nj_ts_train, alpha = alpha[i],
+             h = 12)
+  RMSE[i] <- accuracy(fit,
+                      diff(nj_ts_test))[2,2]
+}
+ 
+alpha.fit <- data_frame(alpha, RMSE)
+alpha.min <- filter(alpha.fit,
+                    RMSE == min(RMSE))
+ 
+ggplot(alpha.fit, aes(alpha, RMSE)) +
+  geom_line() +
+  geom_point(data = alpha.min,
+             aes(alpha, RMSE),
+             size = 2, color = "red") + ggtitle("Alpha vs RMSE") + theme(plot.title = element_text(size = 10)) + theme(plot.title = element_text(hjust = 0.5)) + xlab("Alpha") + ylab("RMSE")
+```
+```{r}
+es(nj_ts, h=12, holdout=TRUE, silent=FALSE, plot=FALSE)
+```
+
+```{r}
+print(alpha.min)
+```
+
+## Conclusions
+
+While exponential smoothing yielded the lower AIC values, it did not take into account the seasonality of the data in its forecasting (just a near-straight horizontal line), which makes it a worse fit to predict future Red-winged blackbird migration trends. The seasonal ARIMA model of (0,0,1)(2,1,1)[3] is our best fit.
